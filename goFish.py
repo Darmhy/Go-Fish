@@ -1,5 +1,11 @@
 import random
 import numpy as np
+import mcts.mcts as mcts
+import mcts.tree_policies as tree_policies
+import mcts.default_policies as default_policies
+import mcts.backups as backups
+from mcts.graph import StateNode
+import mcts.action_and_state as action_and_state
 
 class Player(object):
 	def __init__(self, id, method):
@@ -37,7 +43,7 @@ class Player(object):
 		if result == True:
 			while result == True:
 				turn_record['cards_get'] = turn_record['cards_get'] + 1
-				result = self.requestCard(action[0], action[1])
+				result = self.requestCard(action['requestedPlayer'], action['card'])
 		else:
 			if len(deck.deck) > 0:
 				turn_record['go_fish'] = True
@@ -65,16 +71,10 @@ class Player(object):
 	
 	# MCTS with UCT
 	def Search(self, players, deck, turn):
-		import mcts.mcts as mcts
-		import mcts.tree_policies as tree_policies
-		import mcts.default_policies as default_policies
-		import mcts.backups as backups
-		from mcts.graph import StateNode
-		import mcts.action_and_state as action_and_state
-
 		# c = sqrt(2)
 		tree_policy = tree_policies.UCB1(np.sqrt(2))
-		default_policy = default_policies.random_terminal_roll_out
+		# default_policy = default_policies.random_terminal_roll_out
+		default_policy = default_policies.RandomKStepRollOut(5)
 		backup = backups.monte_carlo
 
 		current_state = self.set_current_state(deck)
@@ -83,8 +83,8 @@ class Player(object):
 		root_node = StateNode(None, state)
 
 		mcts_run = mcts.MCTS(tree_policy, default_policy, backup)
-		action = mcts_run(root_node)
-		action = [players[0], 0]
+		action = mcts_run(root_node, n = 10)
+		action = {'requestedPlayer': players[action[0]], 'card': action[1]}
 		return action
 	
 	def Learning(self, players, deck, turn):
@@ -160,9 +160,10 @@ class Player(object):
 
 			if num_of_rank == 4:
 				print (self.id, " gets four cards at same rank: ", self.hand[i].value)
+				collection = {'find': True, 'card': self.hand[i].value}
 				self.score += 1
 				self.discardMatch(pos_of_cards)
-				return {'find': True, 'card': self.hand[i].value}
+				return collection
 		return {'find': False, 'card': False}
 
 	def printHand(self):
@@ -204,13 +205,16 @@ class Player(object):
 			# requested player has no card
 			self.cards_min[turn_record['request_player']][turn_record['request_card']] = 0
 			self.cards_max[turn_record['request_player']][turn_record['request_card']] = 0
-
+			
+			if self.cards_min[turn_record['turn_player']][turn_record['request_card']] == 0:
+				self.cards_min[turn_record['turn_player']][turn_record['request_card']] = 1
+			
 			if turn_record['go_fish']:
 				# pick up one card
 				self.cards_number[turn_record['turn_player']] = self.cards_number[turn_record['turn_player']] + 1
-
-				if self.cards_min[turn_record['turn_player']][turn_record['request_card']] == 0:
-					self.cards_min[turn_record['turn_player']][turn_record['request_card']] = 1
+				for card in self.cards_max[turn_record['turn_player']].keys():
+					if self.cards_max[turn_record['turn_player']][card] < 3:
+						self.cards_max[turn_record['turn_player']][card] = self.cards_max[turn_record['turn_player']][card] + 1
 			else:
 				# get cards it needs
 				self.cards_min[turn_record['turn_player']][turn_record['request_card']] = turn_record['cards_get'] + self.cards_min[turn_record['turn_player']][turn_record['request_card']]
@@ -223,7 +227,7 @@ class Player(object):
 			if turn_record['find_match']['find']:
 				self.cards_number[turn_record['turn_player']] = self.cards_number[turn_record['turn_player']] - 4
 				self.game_state[turn_record['find_match']['card']] = False
-				self.collections[turn_record['turn_player']] = self.collections[each_player] + 1
+				self.collections[turn_record['turn_player']] = self.collections[turn_record['turn_player']] + 1
 
 				self.cards_min[turn_record['turn_player']][turn_record['find_match']['card']] = 0
 				self.cards_max[turn_record['turn_player']][turn_record['find_match']['card']] = 0
@@ -287,8 +291,9 @@ def printResults(players):
 			maxScore = players[i]
 	print (maxScore.id, " wins with a score of ", maxScore.score)
 	for player in players:
-		print ("player ", player.id, " currently holds:")
-		player.printHand()
+		print ("player ", player.id, " scores:")
+		# player.printHand()
+		print(players[i].score)
 
 def playGame():
 	newDeck = Deck()
@@ -300,6 +305,8 @@ def playGame():
 			
 			for player in players:
 				player.update_state(turn_record)
+			
+			turn = (turn + 1) % len(players)
 
 	printResults(players)
 
