@@ -1,11 +1,23 @@
 import random
 import numpy as np
+
 import mcts.mcts as mcts
 import mcts.tree_policies as tree_policies
 import mcts.default_policies as default_policies
 import mcts.backups as backups
 from mcts.graph import StateNode
 import mcts.action_and_state as action_and_state
+
+import random
+import operator as op
+from functools import reduce
+
+# combination formula
+def ncr(n, r):
+    r = min(r, n-r)
+    numer = reduce(op.mul, range(n, n-r, -1), 1)
+    denom = reduce(op.mul, range(1, r+1), 1)
+    return numer//denom
 
 class Player(object):
 	def __init__(self, id, method):
@@ -41,8 +53,10 @@ class Player(object):
 		turn_record = {'initial_state': False, 'turn_player': self.id, 'request_player': action['requestedPlayer'].id, 'request_card': action['card'], 'cards_get': 0, 'go_fish': False, 'find_match': False}
 		result = self.requestCard(action['requestedPlayer'], action['card'])
 		if result == True:
-			while result == True:
+			count = 0
+			while result == True and count < 3:
 				turn_record['cards_get'] = turn_record['cards_get'] + 1
+				count = count + 1
 				result = self.requestCard(action['requestedPlayer'], action['card'])
 		else:
 			if len(deck.deck) > 0:
@@ -66,7 +80,67 @@ class Player(object):
 		return action
 	
 	def Greedy(self, players, deck, turn):
-		action = [players[0], 0]
+		evaluation = {}
+		self_card = {'2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, 'J': 0, 'Q': 0, 'K': 0, 'A': 0}
+		for card in self.hand:
+			self_card[card.value] = self_card[card.value] + 1
+		
+		current_state = self.set_current_state(deck)
+		all_unknown_cards = 0
+		for card in current_state['unknown_cards'].keys():
+			all_unknown_cards = all_unknown_cards + current_state['unknown_cards'][card]
+
+
+		for card in self_card.keys():
+			if self_card[card] == 0:
+				continue
+			
+			players_prob = [0, 0, 0]
+			for player in range(3):
+				if player == self.id:
+					continue
+				
+				player_unknown_cards = current_state['cards_number'][player]
+				for card_one_have in current_state['cards_min'][player].keys():
+					player_unknown_cards = player_unknown_cards - current_state['cards_min'][player][card_one_have]
+				
+				# possible to get collection
+				if self.cards_max[player][card] + self_card[card] >= 4:
+					num_need_guess = self.cards_max[player][card] - self.cards_min[player][card]
+
+					players_prob[player] = (ncr(current_state['unknown_cards'][card], num_need_guess) * ncr(all_unknown_cards - current_state['unknown_cards'][card], player_unknown_cards - num_need_guess)) / ncr(all_unknown_cards, player_unknown_cards)
+				else:
+					players_prob[player] = 0
+
+			evaluation[card] = 	players_prob.copy()	
+		
+		max_prob = 0
+		max_card = []
+		for card in evaluation.keys():
+			max_individual = 0
+			for individual in evaluation[card]:
+				if individual > max_individual:
+					max_individual = individual
+			
+			if max_individual > max_prob:
+				max_prob = max_individual
+				max_card = [card]
+			elif max_individual == max_prob:
+				max_card.append(card)
+		
+		roll_card = random.randint(0, len(max_card) - 1)
+		player_option = []
+		max_individual = 0
+		for player in range(3):
+			if evaluation[max_card[roll_card]][player] > max_individual:
+				max_individual = evaluation[max_card[roll_card]][player]
+				player_option = [player]
+			elif evaluation[max_card[roll_card]][player] == max_individual:
+				player_option.append(player)
+		
+		roll_player = random.randint(0, len(player_option) - 1)
+
+		action = {'requestedPlayer': players[player_option[roll_player]], 'card': max_card[roll_card]}
 		return action
 	
 	# MCTS with UCT
@@ -74,7 +148,7 @@ class Player(object):
 		# c = sqrt(2)
 		tree_policy = tree_policies.UCB1(np.sqrt(2))
 		# default_policy = default_policies.random_terminal_roll_out
-		default_policy = default_policies.RandomKStepRollOut(5)
+		default_policy = default_policies.RandomKStepRollOut(50)
 		backup = backups.monte_carlo
 
 		current_state = self.set_current_state(deck)
@@ -83,12 +157,12 @@ class Player(object):
 		root_node = StateNode(None, state)
 
 		mcts_run = mcts.MCTS(tree_policy, default_policy, backup)
-		action = mcts_run(root_node, n = 10)
+		action = mcts_run(root_node, n = 500)
 		action = {'requestedPlayer': players[action[0]], 'card': action[1]}
 		return action
 	
 	def Learning(self, players, deck, turn):
-		action = [players[0], 0]
+		action = {'requestedPlayer': players[0], 'card': 0}
 		return action
 
 	# hand over all cards of that rank
@@ -267,10 +341,10 @@ class Card(object):
 		self.value = value
 		self.suit = suit
 
-def createPlayers(deck):
-	player0 = Player(0, 'Search')
-	player1 = Player(1, 'Random')
-	player2 = Player(2, 'Random')
+def createPlayers(deck, player_type = ['Random', 'Random', 'Random']):
+	player0 = Player(0, player_type[0])
+	player1 = Player(1, player_type[1])
+	player2 = Player(2, player_type[2])
 
 	collections = []
 	collections.append(player0.drawHand(deck))
@@ -286,18 +360,27 @@ def createPlayers(deck):
 
 def printResults(players):
 	maxScore = players[0]
+	winner_number = 1
 	for i in range(1, len(players)):
 		if players[i].score > maxScore.score:
 			maxScore = players[i]
-	print (maxScore.id, " wins with a score of ", maxScore.score)
-	for player in players:
-		print ("player ", player.id, " scores:")
-		# player.printHand()
-		print(players[i].score)
+			winner_number = 1
+		elif players[i].score == maxScore.score:
+			winner_number += winner_number
+	if winner_number == 1:
+		print (maxScore.id, " wins with a score of ", maxScore.score)
+		for player in players:
+			print ("player ", player.id, " scores:")
+			# player.printHand()
+			print(player.score)
+	else:
+		print('multiple winners')
+		return -1
+	return maxScore.id
 
-def playGame():
+def playGame(player_type = ['Random', 'Random', 'Random']):
 	newDeck = Deck()
-	players = createPlayers(newDeck)
+	players = createPlayers(newDeck, player_type)
 	turn = 0
 
 	while len(players[0].hand) > 0 and len(players[1].hand) > 0 and len(players[2].hand) > 0:
@@ -308,7 +391,18 @@ def playGame():
 			
 			turn = (turn + 1) % len(players)
 
-	printResults(players)
+	winner = printResults(players)
+	return winner
 
+def experiment(player_type = ['Random', 'Random', 'Random'], n = 100):
+	winning_rate = [0, 0, 0]
+	
+	for turn in range(n):
+		winner_id = playGame(player_type)
+		if winner_id != -1:
+			winning_rate[winner_id] += 1
+	
+	return winning_rate
 
-playGame()
+game_data = experiment(['Greedy', 'Search', 'Random'], 20)
+print('game winning rate: ', game_data)
