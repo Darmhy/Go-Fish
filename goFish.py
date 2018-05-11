@@ -12,12 +12,62 @@ import random
 import operator as op
 from functools import reduce
 
+# Learning
+from keras.models import Sequential, load_model
+from keras.layers import LSTM, TimeDistributed, Dense, Activation
+from keras.optimizers import Adam
+
+from pathlib import Path
+import h5py
+
 # combination formula
 def ncr(n, r):
     r = min(r, n-r)
     numer = reduce(op.mul, range(n, n-r, -1), 1)
     denom = reduce(op.mul, range(1, r+1), 1)
     return numer//denom
+
+class RNN(object):
+	def __init__(self, 
+		BATCH_START = 0,
+		TIME_STEPS = 20,
+		BATCH_SIZE = 50,
+		INPUT_SIZE = (71,),
+		OUTPUT_SIZE = 71,
+		CELL_SIZE = 20,
+		LR = 0.006):
+		
+		model_HDF5 = Path('./RNN_model.h5')
+		# if exist, load the model
+		if model_HDF5.is_file():
+			self.model = load_model('RNN_model.h5')
+		# else create a new RNN model
+		else:
+			self.model = Sequential()
+			# build a LSTM RNN
+			self.model.add(LSTM(
+				OUTPUT_SIZE,
+				input_shape=INPUT_SIZE,       # Or: input_dim=INPUT_SIZE, input_length=TIME_STEPS,
+				output_dim=CELL_SIZE,
+				return_sequences=True,      # True: output at all steps. False: output as last step.
+			))
+			# add output layer
+			self.model.add(TimeDistributed(Dense(OUTPUT_SIZE)))
+			self.model.add(Activation('softmax'))
+
+			adam = Adam(LR)
+			self.model.compile(optimizer = adam, loss = 'mean_squared_error')
+
+	def train(self, X_batch, Y_batch, n_batch):
+		self.model.fit(X_batch, Y_batch, epochs = 1, batch_size = n_batch, shuffle = False, verbose = 2)
+	
+	def predict(self, X_batch, n_batch):
+		Y_batch = self.model.predict(X_batch, batch_size = n_batch)
+		predict = Y_batch[-1]
+		return predict
+
+	def save(self):
+		self.model.save('RNN_model.h5')
 
 class Player(object):
 	def __init__(self, id, method):
@@ -28,12 +78,18 @@ class Player(object):
 		self.collections = [0, 0, 0]
 
 		self.method = method
+		self.RNN_model = None
+		if self.method == 'Learning':
+			self.RNN_model = RNN()
+
 		self.cards_number = [7, 7, 7]	# cards each player has
 
 		self.cards_min = [{'2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, 'J': 0, 'Q': 0, 'K': 0, 'A': 0} for x in range(3)]
 		self.cards_max = [{'2': 3, '3': 3, '4': 3, '5': 3, '6': 3, '7': 3, '8': 3, '9': 3, '10': 3, 'J': 3, 'Q': 3, 'K': 3, 'A': 3} for x in range(3)]
 
 		self.game_state = {'2': True, '3': True, '4': True, '5': True, '6': True, '7': True, '8': True, '9': True, '10': True, 'J': True, 'Q': True, 'K': True, 'A': True}
+
+		self.history = []
 
 	def playTurn(self, players, deck, turn):
 
@@ -157,14 +213,15 @@ class Player(object):
 		root_node = StateNode(None, state)
 
 		mcts_run = mcts.MCTS(tree_policy, default_policy, backup)
-		action = mcts_run(root_node, n = 500)
+		action = mcts_run(root_node, n = 800)
 		action = {'requestedPlayer': players[action[0]], 'card': action[1]}
 		return action
 	
 	def Learning(self, players, deck, turn):
+		
 		action = {'requestedPlayer': players[0], 'card': 0}
 		return action
-
+	
 	# hand over all cards of that rank
 	def requestCard(self, player2, value):
 		for card in range(len(player2.hand)): 
@@ -264,7 +321,7 @@ class Player(object):
 		self.hand.remove(self.hand[pos_of_cards[0]])
 
 	# update the game state every turn
-	def update_state(self, turn_record):
+	def update_state(self, turn_record, score = None):
 		# update initial game state
 		if turn_record['initial_state'] == True:
 			for each_player in range(len(turn_record['collections'])):
@@ -276,6 +333,29 @@ class Player(object):
 					self.collections[each_player] = self.collections[each_player] + 1
 		# update normal turn information
 		else:
+			# record history
+			player = [0 for x in range(3)]
+			player[turn_record['turn_player']] = 1
+
+			action = [0 for x in range(39)]
+			card_sequence = list(self.game_state.keys()).index(turn_record['request_card'])
+			action[turn_record['request_player'] * 13 + card_sequence] = 1
+			
+			game_state = []
+			for card in self.game_state:
+				if card == True:
+					game_state.append(1)
+				else:
+					game_state.append(0)
+			
+			self_cards = {'2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0, '10': 0, 'J': 0, 'Q': 0, 'K': 0, 'A': 0}
+			for each in self.hand:
+				self_cards[each.value] += 1
+			self_cards = list(self_cards.values())
+
+			self.history.append(player + action + score + game_state + self_cards)
+			print(self.history, len(self.history[-1]))
+
 			# requested player has no card
 			self.cards_min[turn_record['request_player']][turn_record['request_card']] = 0
 			self.cards_max[turn_record['request_player']][turn_record['request_card']] = 0
@@ -387,7 +467,7 @@ def playGame(player_type = ['Random', 'Random', 'Random']):
 			turn_record = players[turn].playTurn(players, newDeck, turn)
 			
 			for player in players:
-				player.update_state(turn_record)
+				player.update_state(turn_record, [players[0].score, players[1].score, players[2].score])
 			
 			turn = (turn + 1) % len(players)
 
@@ -404,5 +484,12 @@ def experiment(player_type = ['Random', 'Random', 'Random'], n = 100):
 	
 	return winning_rate
 
-game_data = experiment(['Greedy', 'Search', 'Random'], 20)
-print('game winning rate: ', game_data)
+player_type = ['Greedy', 'Greedy', 'Greedy']
+turn = 500
+game_data = experiment(player_type, turn)
+
+with open('C:/Users/ljsPC/Desktop/go_fish_data2.txt', 'w') as experiment_data:
+	print('game winning rate: ', game_data)
+	data = {player_type[0]: game_data[0], player_type[1]: game_data[1] + game_data[2]}
+	experiment_data.writelines(str(turn))
+	experiment_data.writelines(str(data))
